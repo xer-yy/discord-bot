@@ -9,7 +9,7 @@ class Owner(commands.Cog):
 
     @commands.command()
     async def panel(self, ctx):
-        if ctx.author.id != OWNER_ID:1265528345576341648
+        if ctx.author.id != OWNER_ID:
             return await ctx.send("❌ Bu panel sadece owner içindir.")
 
         embed = discord.Embed(
