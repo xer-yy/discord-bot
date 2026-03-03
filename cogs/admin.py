@@ -1,3 +1,6 @@
+class Admin(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 import discord
 from discord.ext import commands, tasks
 import sqlite3
@@ -659,6 +662,5 @@ Mute Rol: {MUTE_ROLE_NAME}
         discord.Color.green()
     )
 
-    await ctx.send(embed=embed)
 async def setup(bot):
     await bot.add_cog(Admin(bot))
