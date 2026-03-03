@@ -7,8 +7,9 @@ import os
 UYARI_KANAL_ADI = "uyarı"
 DUYURU_KANAL_ADI = "duyuru"
 
-RESET_DOSYA = "reset_time.json"
 DATA_DOSYA = "warn_data.json"
+RESET_DOSYA = "reset_time.json"
+
 
 class Admin(commands.Cog):
     def __init__(self, bot):
@@ -29,7 +30,10 @@ class Admin(commands.Cog):
 
         if not os.path.exists(RESET_DOSYA):
             with open(RESET_DOSYA, "w") as f:
-                json.dump({"next_reset": self.get_next_reset().isoformat()}, f)
+                json.dump(
+                    {"next_reset": self.get_next_reset().isoformat()},
+                    f
+                )
 
     def save_data(self):
         with open(DATA_DOSYA, "w") as f:
@@ -40,10 +44,13 @@ class Admin(commands.Cog):
 
     def update_reset_time(self):
         with open(RESET_DOSYA, "w") as f:
-            json.dump({"next_reset": self.get_next_reset().isoformat()}, f)
+            json.dump(
+                {"next_reset": self.get_next_reset().isoformat()},
+                f
+            )
 
     # =========================
-    # ROLE HELPER
+    # WARN ROL GÜNCELLEME
     # =========================
     async def update_warn_roles(self, member, warn_count):
         guild = member.guild
@@ -84,19 +91,19 @@ class Admin(commands.Cog):
             try:
                 await member.timeout(datetime.timedelta(minutes=10))
                 await ctx.send(f"{member.mention} 10 dakika mute yedi.")
-            except:
-                pass
+            except Exception as e:
+                print("Mute hatası:", e)
 
-        # 5 WARN → UYARI KANALI + DUYURU
+        # 5 WARN → UYARI + DUYURU KANALI
         if warn_count == 5:
             for channel in ctx.guild.text_channels:
-                if channel.name == UYARI_KANAL_ADI or channel.name == DUYURU_KANAL_ADI:
+                if channel.name in [UYARI_KANAL_ADI, DUYURU_KANAL_ADI]:
                     await channel.send(
                         f"🚨 {member.mention} 5 warn aldı!\nSebep: {reason}"
                     )
 
     # =========================
-    # SİCİL GÖRME
+    # SİCİL KOMUTU
     # =========================
     @commands.command()
     async def sicil(self, ctx, member: discord.Member):
@@ -121,13 +128,15 @@ class Admin(commands.Cog):
                 pass
 
         for channel in ctx.guild.text_channels:
-            if channel.name == UYARI_KANAL_ADI or channel.name == DUYURU_KANAL_ADI:
-                await channel.send("📢 Sunucu geneli tüm cezalar sıfırlandı.")
+            if channel.name in [UYARI_KANAL_ADI, DUYURU_KANAL_ADI]:
+                await channel.send(
+                    "📢 Sunucu geneli tüm cezalar manuel olarak sıfırlandı."
+                )
 
-        await ctx.send("Tüm cezalar manuel olarak sıfırlandı.")
+        await ctx.send("Tüm cezalar sıfırlandı.")
 
     # =========================
-    # OTOMATİK 10 GÜN RESET
+    # OTOMATİK 10 GÜNLÜK RESET
     # =========================
     @tasks.loop(hours=1)
     async def reset_loop(self):
@@ -149,12 +158,15 @@ class Admin(commands.Cog):
                         pass
 
                 for channel in guild.text_channels:
-                    if channel.name == UYARI_KANAL_ADI or channel.name == DUYURU_KANAL_ADI:
-                        await channel.send("📢 10 günlük otomatik reset gerçekleşti. Tüm cezalar silindi.")
+                    if channel.name in [UYARI_KANAL_ADI, DUYURU_KANAL_ADI]:
+                        await channel.send(
+                            "📢 10 günlük otomatik reset gerçekleşti. Tüm cezalar silindi."
+                        )
 
             self.warn_data = {}
             self.save_data()
             self.update_reset_time()
+
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
