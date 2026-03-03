@@ -1,9 +1,36 @@
 import discord
 from discord.ext import commands
 import asyncio
+import re
+import sqlite3
 from database import is_admin, add_punishment
 from config import OWNER_ID
-import sqlite3
+
+def parse_duration(duration_str):
+    pattern = r"(\d+)([smhdw])"
+    matches = re.findall(pattern, duration_str.lower())
+
+    if not matches:
+        return None
+
+    total_seconds = 0
+
+    for value, unit in matches:
+        value = int(value)
+
+        if unit == "s":
+            total_seconds += value
+        elif unit == "m":
+            total_seconds += value * 60
+        elif unit == "h":
+            total_seconds += value * 3600
+        elif unit == "d":
+            total_seconds += value * 86400
+        elif unit == "w":
+            total_seconds += value * 604800
+
+    return total_seconds
+
 
 class Admin(commands.Cog):
     def __init__(self, bot):
@@ -15,11 +42,11 @@ class Admin(commands.Cog):
     @commands.command()
     async def duyuru(self, ctx, *, mesaj):
         if not self.check_admin(ctx):
-            return await ctx.send("❌ Bu komutu kullanamazsın.")
+            return await ctx.send("❌ Yetkin yok.")
 
         kanal = discord.utils.get(ctx.guild.text_channels, name="duyurular")
         if kanal is None:
-            return await ctx.send("❌ 'duyurular' kanalı bulunamadı.")
+            return await ctx.send("❌ 'duyurular' kanalı yok.")
 
         embed = discord.Embed(
             title="📢 DUYURU",
@@ -40,6 +67,14 @@ class Admin(commands.Cog):
         if not self.check_admin(ctx):
             return await ctx.send("❌ Yetkin yok.")
 
+        if member.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
+            return await ctx.send("❌ Bu kişiyi susturamazsın (rol hiyerarşisi).")
+
+        seconds = parse_duration(süre.replace(" ", ""))
+
+        if not seconds:
+            return await ctx.send("❌ Süre formatı hatalı.\nÖrnek: 10m, 2h, 1d, 1h30m")
+
         muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
 
         if muted_role is None:
@@ -49,20 +84,13 @@ class Admin(commands.Cog):
 
         await member.add_roles(muted_role)
 
-        if süre.endswith("m"):
-            seconds = int(süre[:-1]) * 60
-        elif süre.endswith("h"):
-            seconds = int(süre[:-1]) * 3600
-        else:
-            return await ctx.send("❌ Süre formatı: 10m veya 1h")
-
         add_punishment(ctx.guild.id, member.id, ctx.author.id, "MUTE", sebep)
 
         await ctx.send(f"🔇 {member.mention} {süre} boyunca susturuldu.")
 
         log = discord.utils.get(ctx.guild.text_channels, name="log")
         if log:
-            await log.send(f"🔇 {member} susturuldu | Süre: {süre} | Yetkili: {ctx.author}")
+            await log.send(f"🔇 {member} susturuldu | Süre: {süre} | Yetkili: {ctx.author} | Sebep: {sebep}")
 
         await asyncio.sleep(seconds)
 
@@ -112,8 +140,7 @@ class Admin(commands.Cog):
             color=discord.Color.orange()
         )
 
-        for kayıt in kayıtlar[:10]:
-            tür, sebep, zaman = kayıt
+        for tür, sebep, zaman in kayıtlar[:10]:
             embed.add_field(
                 name=f"{tür} | {zaman}",
                 value=f"Sebep: {sebep}",
@@ -121,6 +148,7 @@ class Admin(commands.Cog):
             )
 
         await ctx.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
