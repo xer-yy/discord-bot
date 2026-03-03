@@ -35,6 +35,61 @@ class Admin(commands.Cog):
 
         await kanal.send(embed=embed)
         await ctx.send("✅ Duyuru gönderildi.")
+import asyncio
+from database import add_punishment
+@commands.command()
+async def mute(self, ctx, member: discord.Member, süre: str, *, sebep="Belirtilmedi"):
+    if not self.check_admin(ctx):
+        return await ctx.send("❌ Yetkin yok.")
 
+    muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+
+    if muted_role is None:
+        muted_role = await ctx.guild.create_role(name="Muted")
+
+        for channel in ctx.guild.channels:
+            await channel.set_permissions(muted_role, send_messages=False, speak=False)
+
+    await member.add_roles(muted_role)
+
+    # Süre hesaplama
+    if süre.endswith("m"):
+        seconds = int(süre[:-1]) * 60
+    elif süre.endswith("h"):
+        seconds = int(süre[:-1]) * 3600
+    else:
+        return await ctx.send("❌ Süre formatı: 10m veya 1h")
+
+    add_punishment(ctx.guild.id, member.id, ctx.author.id, "MUTE", sebep)
+
+    await ctx.send(f"🔇 {member.mention} {süre} boyunca susturuldu.")
+
+    # Log
+    log = discord.utils.get(ctx.guild.text_channels, name="log")
+    if log:
+        await log.send(f"🔇 {member} susturuldu | Süre: {süre} | Yetkili: {ctx.author}")
+
+    await asyncio.sleep(seconds)
+
+    if muted_role in member.roles:
+        await member.remove_roles(muted_role)
+        if log:
+            await log.send(f"🔊 {member} otomatik olarak susturma kaldırıldı.")
+            @commands.command()
+async def unmute(self, ctx, member: discord.Member):
+    if not self.check_admin(ctx):
+        return await ctx.send("❌ Yetkin yok.")
+
+    muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+
+    if muted_role in member.roles:
+        await member.remove_roles(muted_role)
+        await ctx.send(f"🔊 {member.mention} susturma kaldırıldı.")
+
+        log = discord.utils.get(ctx.guild.text_channels, name="log")
+        if log:
+            await log.send(f"🔊 {member} susturma kaldırıldı | Yetkili: {ctx.author}")
+    else:
+        await ctx.send("❌ Kullanıcı muted değil.")
 async def setup(bot):
     await bot.add_cog(Admin(bot))
