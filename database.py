@@ -4,21 +4,26 @@ conn = sqlite3.connect("bot.db")
 cursor = conn.cursor()
 
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS roles (
+CREATE TABLE IF NOT EXISTS admins (
     guild_id INTEGER,
-    user_id INTEGER,
-    role_type TEXT
+    user_id INTEGER
 )
 """)
 
 conn.commit()
 
-def set_role(guild_id, user_id, role_type):
-    cursor.execute("DELETE FROM roles WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-    cursor.execute("INSERT INTO roles VALUES (?, ?, ?)", (guild_id, user_id, role_type))
+def add_admin(guild_id, user_id):
+    cursor.execute("INSERT INTO admins VALUES (?, ?)", (guild_id, user_id))
     conn.commit()
 
-def get_role(guild_id, user_id):
-    cursor.execute("SELECT role_type FROM roles WHERE guild_id=? AND user_id=?", (guild_id, user_id))
-    result = cursor.fetchone()
-    return result[0] if result else "user"
+def remove_admin(guild_id, user_id):
+    cursor.execute("DELETE FROM admins WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+    conn.commit()
+
+def is_admin(guild_id, user_id):
+    cursor.execute("SELECT * FROM admins WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+    return cursor.fetchone() is not None
+
+def get_admins(guild_id):
+    cursor.execute("SELECT user_id FROM admins WHERE guild_id=?", (guild_id,))
+    return cursor.fetchall()
