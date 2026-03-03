@@ -1,118 +1,93 @@
 import discord
 from discord.ext import commands, tasks
-import datetime
-import json
-import os
-import asyncio
+import sqlite3
+from datetime import datetime, timedelta
+from config import OWNER_ID
 
-# ================= CONFIG =================
+DB = "bot.db"
 
-WARN_FILE = "warn_data.json"
-ADMIN_FILE = "admin_data.json"
-MUTE_FILE = "mute_data.json"
-RESET_FILE = "reset_time.json"
-STATS_FILE = "stats_data.json"
 
-UYARI_KANAL = "uyarı"
-DUYURU_KANAL = "duyuru"
-YONETIM_KANAL = "yonetim-uyari"
+# ================= DATABASE =================
 
-MUTE_ROLE_NAME = "Mute"
-MUTE_DURATION = 600  # 10 dakika
-RESET_GUN = 10
+def db():
+    return sqlite3.connect(DB)
 
-# =========================================
 
+def setup_db():
+    conn = db()
+    c = conn.cursor()
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS punishments(
+        guild_id INTEGER,
+        user_id INTEGER,
+        moderator_id INTEGER,
+        type TEXT,
+        reason TEXT,
+        timestamp TEXT
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS mutes(
+        guild_id INTEGER,
+        user_id INTEGER,
+        end_time TEXT
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS admins(
+        guild_id INTEGER,
+        user_id INTEGER
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS reset_timer(
+        guild_id INTEGER,
+        next_reset TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# ================= COG =================
 
 class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.warn_data = {}
-        self.admins = []
-        self.mute_data = {}
-        self.stats_data = {}
-        self.load_all_data()
-        self.reset_loop.start()
+        setup_db()
         self.mute_loop.start()
+        self.reset_loop.start()
 
-    # ================= DATA LOAD =================
+    # ---------- ADMIN CHECK ----------
 
-    def load_json(self, file, default):
-        if os.path.exists(file):
-            with open(file, "r") as f:
-                return json.load(f)
-        return default
-
-    def save_json(self, file, data):
-        with open(file, "w") as f:
-            json.dump(data, f, indent=4)
-
-    def load_all_data(self):
-        self.warn_data = self.load_json(WARN_FILE, {})
-        self.admins = self.load_json(ADMIN_FILE, [])
-        self.mute_data = self.load_json(MUTE_FILE, {})
-        self.stats_data = self.load_json(STATS_FILE, {})
-
-        if not os.path.exists(RESET_FILE):
-            next_reset = datetime.datetime.utcnow() + datetime.timedelta(days=RESET_GUN)
-            self.save_json(RESET_FILE, {"next_reset": next_reset.isoformat()})
-
-    # ================= ADMIN SYSTEM =================
-
-    def is_bot_admin(self, user):
-        return str(user.id) in self.admins
-
-    async def admin_control(self, ctx):
-        if not self.admins:
-            self.admins.append(str(ctx.author.id))
-            self.save_json(ADMIN_FILE, self.admins)
-            await ctx.send("👑 İlk bot admini olarak atandın.")
+    def is_admin(self, guild_id, user_id):
+        if user_id == OWNER_ID:
             return True
+        conn = db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM admins WHERE guild_id=? AND user_id=?",
+                  (guild_id, user_id))
+        result = c.fetchone()
+        conn.close()
+        return result is not None
 
-        if not self.is_bot_admin(ctx.author):
-            await ctx.send("⛔ Bu komutu kullanmak için bot admini olmalısın.")
-            return False
+    # ---------- WARN COUNT ----------
 
-        return True
+    def warn_count(self, guild_id, user_id):
+        conn = db()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM punishments WHERE guild_id=? AND user_id=? AND type='WARN'",
+                  (guild_id, user_id))
+        count = c.fetchone()[0]
+        conn.close()
+        return count
 
-    @commands.command()
-    async def adminekle(self, ctx, member: discord.Member):
-        if not await self.admin_control(ctx):
-            return
-
-        if str(member.id) not in self.admins:
-            self.admins.append(str(member.id))
-            self.save_json(ADMIN_FILE, self.admins)
-            await ctx.send(f"✅ {member.mention} admin yapıldı.")
-
-    @commands.command()
-    async def adminsil(self, ctx, member: discord.Member):
-        if not await self.admin_control(ctx):
-            return
-
-        if str(member.id) in self.admins:
-            self.admins.remove(str(member.id))
-            self.save_json(ADMIN_FILE, self.admins)
-            await ctx.send(f"❌ {member.mention} adminlikten çıkarıldı.")
-
-    @commands.command()
-    async def adminliste(self, ctx):
-        if not await self.admin_control(ctx):
-            return
-
-        embed = discord.Embed(title="🛡 Bot Admin Listesi", color=discord.Color.gold())
-
-        for i, admin_id in enumerate(self.admins, 1):
-            member = ctx.guild.get_member(int(admin_id))
-            embed.add_field(
-                name=f"{i}. Admin",
-                value=member.mention if member else f"ID: {admin_id}",
-                inline=False
-            )
-
-        await ctx.send(embed=embed)
-
-    # ================= WARN SYSTEM =================
+    # ---------- WARN ROLE UPDATE ----------
 
     async def update_warn_roles(self, member, count):
         for i in range(1, 6):
@@ -125,236 +100,246 @@ class Admin(commands.Cog):
             if role:
                 await member.add_roles(role)
 
+    # ================= WARN =================
+
     @commands.command()
-    async def warn(self, ctx, member: discord.Member, *, reason="Sebep belirtilmedi"):
-        if not await self.admin_control(ctx):
-            return
+    async def warn(self, ctx, member: discord.Member, *, reason="Belirtilmedi"):
+        if not self.is_admin(ctx.guild.id, ctx.author.id):
+            return await ctx.send("❌ Yetkin yok.")
 
-        user_id = str(member.id)
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-        self.warn_data.setdefault(user_id, [])
-        self.warn_data[user_id].append({
-            "reason": reason,
-            "moderator": str(ctx.author),
-            "date": datetime.datetime.utcnow().strftime("%d.%m.%Y %H:%M")
-        })
+        conn = db()
+        c = conn.cursor()
+        c.execute("INSERT INTO punishments VALUES (?,?,?,?,?,?)",
+                  (ctx.guild.id, member.id, ctx.author.id, "WARN", reason, now))
+        conn.commit()
+        conn.close()
 
-        count = len(self.warn_data[user_id])
+        count = self.warn_count(ctx.guild.id, member.id)
         await self.update_warn_roles(member, count)
-        self.save_json(WARN_FILE, self.warn_data)
 
-        # Stats
-        mod_id = str(ctx.author.id)
-        self.stats_data.setdefault(mod_id, {"warn": 0, "mute": 0})
-        self.stats_data[mod_id]["warn"] += 1
-        self.save_json(STATS_FILE, self.stats_data)
+        await ctx.send(f"⚠ {member.mention} warn aldı. Toplam: {count}")
 
-        embed = discord.Embed(
-            title="⚠ Kullanıcı Uyarıldı",
-            color=discord.Color.orange(),
-            timestamp=datetime.datetime.utcnow()
-        )
-        embed.add_field(name="Kullanıcı", value=member.mention)
-        embed.add_field(name="Toplam Warn", value=str(count))
-        embed.add_field(name="Sebep", value=reason, inline=False)
-
-        await ctx.send(embed=embed)
-
-        # 3 Warn → Mute
         if count == 3:
-            await self.mute_member(member, ctx.author)
+            await self.apply_mute(ctx.guild, member, 600, "3 WARN Otomatik Mute")
 
-        # 5 Warn → Yönetim Alarm
         if count == 5:
-            kanal = discord.utils.get(ctx.guild.text_channels, name=YONETIM_KANAL)
+            kanal = discord.utils.get(ctx.guild.text_channels, name="uyarı")
             if kanal:
-                await kanal.send(
-                    f"🚨 {member.mention} 5 WARN seviyesine ulaştı! Yönetim incelemesi gerekli."
+                embed = discord.Embed(
+                    title="🚨 5 WARN UYARISI",
+                    description=f"{member.mention} 5 warn aldı!\nSebep: {reason}",
+                    color=discord.Color.red()
                 )
+                await kanal.send(embed=embed)
 
-    # ================= MUTE SYSTEM =================
+    # ================= MUTE =================
 
-    async def mute_member(self, member, moderator):
-        mute_role = discord.utils.get(member.guild.roles, name=MUTE_ROLE_NAME)
-        if not mute_role:
-            return
+    async def apply_mute(self, guild, member, seconds, reason):
+        role = discord.utils.get(guild.roles, name="Muted")
+        if not role:
+            role = await guild.create_role(name="Muted")
+            for channel in guild.channels:
+                await channel.set_permissions(role, send_messages=False, speak=False)
 
-        await member.add_roles(mute_role)
+        await member.add_roles(role)
 
-        bitis = datetime.datetime.utcnow() + datetime.timedelta(seconds=MUTE_DURATION)
-        self.mute_data[str(member.id)] = bitis.isoformat()
-        self.save_json(MUTE_FILE, self.mute_data)
+        end_time = datetime.utcnow() + timedelta(seconds=seconds)
 
-        # Stats
-        mod_id = str(moderator.id)
-        self.stats_data.setdefault(mod_id, {"warn": 0, "mute": 0})
-        self.stats_data[mod_id]["mute"] += 1
-        self.save_json(STATS_FILE, self.stats_data)
+        conn = db()
+        c = conn.cursor()
+        c.execute("INSERT INTO mutes VALUES (?,?,?)",
+                  (guild.id, member.id, end_time.strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
 
     @commands.command()
     async def unmute(self, ctx, member: discord.Member):
-        if not await self.admin_control(ctx):
-            return
+        if not self.is_admin(ctx.guild.id, ctx.author.id):
+            return await ctx.send("❌ Yetkin yok.")
 
-        mute_role = discord.utils.get(ctx.guild.roles, name=MUTE_ROLE_NAME)
-        if mute_role and mute_role in member.roles:
-            await member.remove_roles(mute_role)
+        role = discord.utils.get(ctx.guild.roles, name="Muted")
+        if role and role in member.roles:
+            await member.remove_roles(role)
 
-        self.mute_data.pop(str(member.id), None)
-        self.save_json(MUTE_FILE, self.mute_data)
+        conn = db()
+        c = conn.cursor()
+        c.execute("DELETE FROM mutes WHERE guild_id=? AND user_id=?",
+                  (ctx.guild.id, member.id))
+        conn.commit()
+        conn.close()
 
-        await ctx.send("🔊 Kullanıcı unmute edildi.")
-
-    # Restart güvenli otomatik unmute
-    @tasks.loop(seconds=30)
-    async def mute_loop(self):
-        now = datetime.datetime.utcnow()
-
-        for user_id, bitis in list(self.mute_data.items()):
-            if now >= datetime.datetime.fromisoformat(bitis):
-                for guild in self.bot.guilds:
-                    member = guild.get_member(int(user_id))
-                    if member:
-                        mute_role = discord.utils.get(guild.roles, name=MUTE_ROLE_NAME)
-                        if mute_role and mute_role in member.roles:
-                            await member.remove_roles(mute_role)
-
-                self.mute_data.pop(user_id)
-
-        self.save_json(MUTE_FILE, self.mute_data)
+        await ctx.send("🔊 Unmute edildi.")
 
     # ================= SICIL =================
 
     @commands.command()
     async def sicil(self, ctx, member: discord.Member):
-        if not await self.admin_control(ctx):
-            return
+        if not self.is_admin(ctx.guild.id, ctx.author.id):
+            return await ctx.send("❌ Yetkin yok.")
 
-        user_id = str(member.id)
+        conn = db()
+        c = conn.cursor()
+        c.execute("""
+        SELECT type, reason, timestamp
+        FROM punishments
+        WHERE guild_id=? AND user_id=?
+        ORDER BY timestamp DESC
+        """, (ctx.guild.id, member.id))
 
-        if user_id not in self.warn_data:
-            await ctx.send("📜 Sicil temiz.")
-            return
+        rows = c.fetchall()
+        conn.close()
 
-        embed = discord.Embed(
-            title="📜 Kullanıcı Sicili",
-            color=discord.Color.blue()
-        )
+        if not rows:
+            return await ctx.send("🧾 Sicil temiz.")
 
-        for i, entry in enumerate(self.warn_data[user_id], 1):
-            embed.add_field(
-                name=f"{i}. Warn",
-                value=f"{entry['reason']} | {entry['moderator']} | {entry['date']}",
-                inline=False
-            )
+        embed = discord.Embed(title=f"{member.display_name} Sicil",
+                              color=discord.Color.orange())
 
-        embed.set_footer(text=f"Toplam Warn: {len(self.warn_data[user_id])}")
+        for r in rows[:15]:
+            embed.add_field(name=f"{r[0]} | {r[2]}",
+                            value=f"Sebep: {r[1]}",
+                            inline=False)
+
         await ctx.send(embed=embed)
 
-    # ================= YETKİLİ İSTATİSTİK =================
+    # ================= ADMIN SYSTEM =================
 
     @commands.command()
-    async def ystat(self, ctx):
-        if not await self.admin_control(ctx):
-            return
+    async def adminekle(self, ctx, member: discord.Member):
+        if ctx.author.id != OWNER_ID:
+            return await ctx.send("❌ Sadece bot sahibi.")
 
-        embed = discord.Embed(
-            title="📊 Yetkili Performans Paneli",
-            color=discord.Color.purple()
-        )
+        conn = db()
+        c = conn.cursor()
+        c.execute("INSERT INTO admins VALUES (?,?)",
+                  (ctx.guild.id, member.id))
+        conn.commit()
+        conn.close()
 
-        if not self.stats_data:
-            embed.description = "Henüz veri yok."
-            await ctx.send(embed=embed)
-            return
-
-        en_aktif = None
-        en_warn = 0
-
-        for admin_id, stats in self.stats_data.items():
-            member = ctx.guild.get_member(int(admin_id))
-            isim = member.mention if member else admin_id
-
-            embed.add_field(
-                name=isim,
-                value=f"Warn: {stats['warn']} | Mute: {stats['mute']}",
-                inline=False
-            )
-
-            if stats["warn"] > en_warn:
-                en_warn = stats["warn"]
-                en_aktif = isim
-
-        embed.set_footer(text=f"En Aktif Moderator: {en_aktif}")
-        await ctx.send(embed=embed)
-
-    # ================= MOD PANEL (DASHBOARD) =================
+        await ctx.send("✅ Admin eklendi.")
 
     @commands.command()
-    async def modpanel(self, ctx):
-        if not await self.admin_control(ctx):
-            return
+    async def adminsil(self, ctx, member: discord.Member):
+        if ctx.author.id != OWNER_ID:
+            return await ctx.send("❌ Sadece bot sahibi.")
 
-        toplam_warn = sum(len(v) for v in self.warn_data.values())
-        warn_kisi = len(self.warn_data)
-        aktif_mute = len(self.mute_data)
+        conn = db()
+        c = conn.cursor()
+        c.execute("DELETE FROM admins WHERE guild_id=? AND user_id=?",
+                  (ctx.guild.id, member.id))
+        conn.commit()
+        conn.close()
 
-        with open(RESET_FILE, "r") as f:
-            reset_data = json.load(f)
+        await ctx.send("🗑 Admin silindi.")
 
-        sonraki_reset = datetime.datetime.fromisoformat(reset_data["next_reset"])
+    @commands.command()
+    async def adminliste(self, ctx):
+        if ctx.author.id != OWNER_ID:
+            return await ctx.send("❌ Sadece bot sahibi.")
 
-        embed = discord.Embed(
-            title="🛡 Moderasyon Dashboard",
-            color=discord.Color.dark_gold(),
-            timestamp=datetime.datetime.utcnow()
-        )
+        conn = db()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM admins WHERE guild_id=?",
+                  (ctx.guild.id,))
+        rows = c.fetchall()
+        conn.close()
 
-        embed.add_field(name="Toplam Aktif Warn", value=str(toplam_warn))
-        embed.add_field(name="Warn Alan Kişi", value=str(warn_kisi))
-        embed.add_field(name="Aktif Mute", value=str(aktif_mute))
-        embed.add_field(name="Sonraki Reset", value=sonraki_reset.strftime("%d.%m.%Y %H:%M"))
+        text = ""
+        for r in rows:
+            text += f"<@{r[0]}>\n"
 
-        await ctx.send(embed=embed)
+        await ctx.send(f"📋 Adminler:\n{text}")
 
-    # ================= GLOBAL RESET =================
+    # ================= RESET =================
+
+    @commands.command()
+    async def resetceza(self, ctx):
+        if not self.is_admin(ctx.guild.id, ctx.author.id):
+            return await ctx.send("❌ Yetkin yok.")
+
+        await self.global_reset(ctx.guild)
+        await ctx.send("♻ Tüm cezalar sıfırlandı.")
+
+    async def global_reset(self, guild):
+        conn = db()
+        c = conn.cursor()
+        c.execute("DELETE FROM punishments WHERE guild_id=?", (guild.id,))
+        c.execute("DELETE FROM mutes WHERE guild_id=?", (guild.id,))
+        conn.commit()
+        conn.close()
+
+        for member in guild.members:
+            for i in range(1, 6):
+                role = discord.utils.get(guild.roles, name=f"Warn {i}")
+                if role and role in member.roles:
+                    await member.remove_roles(role)
+
+            mute = discord.utils.get(guild.roles, name="Muted")
+            if mute and mute in member.roles:
+                await member.remove_roles(mute)
+
+        embed = discord.Embed(title="♻ GLOBAL CEZA RESET",
+                              description="Tüm cezalar temizlendi.",
+                              color=discord.Color.green())
+
+        for name in ["uyarı", "duyurular"]:
+            ch = discord.utils.get(guild.text_channels, name=name)
+            if ch:
+                await ch.send(embed=embed)
+
+        next_reset = datetime.utcnow() + timedelta(days=10)
+
+        conn = db()
+        c = conn.cursor()
+        c.execute("DELETE FROM reset_timer WHERE guild_id=?", (guild.id,))
+        c.execute("INSERT INTO reset_timer VALUES (?,?)",
+                  (guild.id, next_reset.strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+
+    # ================= LOOPS =================
+
+    @tasks.loop(minutes=1)
+    async def mute_loop(self):
+        await self.bot.wait_until_ready()
+        conn = db()
+        c = conn.cursor()
+        c.execute("SELECT guild_id, user_id, end_time FROM mutes")
+        rows = c.fetchall()
+
+        for g, u, end in rows:
+            guild = self.bot.get_guild(g)
+            if not guild:
+                continue
+            member = guild.get_member(u)
+            if not member:
+                continue
+            if datetime.utcnow() >= datetime.strptime(end, "%Y-%m-%d %H:%M:%S"):
+                role = discord.utils.get(guild.roles, name="Muted")
+                if role and role in member.roles:
+                    await member.remove_roles(role)
+                c.execute("DELETE FROM mutes WHERE guild_id=? AND user_id=?",
+                          (g, u))
+                conn.commit()
+
+        conn.close()
 
     @tasks.loop(hours=1)
     async def reset_loop(self):
+        await self.bot.wait_until_ready()
+        conn = db()
+        c = conn.cursor()
+        c.execute("SELECT guild_id, next_reset FROM reset_timer")
+        rows = c.fetchall()
 
-        with open(RESET_FILE, "r") as f:
-            data = json.load(f)
+        for g, time in rows:
+            guild = self.bot.get_guild(g)
+            if guild and datetime.utcnow() >= datetime.strptime(time, "%Y-%m-%d %H:%M:%S"):
+                await self.global_reset(guild)
 
-        next_reset = datetime.datetime.fromisoformat(data["next_reset"])
-
-        if datetime.datetime.utcnow() >= next_reset:
-
-            for guild in self.bot.guilds:
-
-                for member in guild.members:
-                    for role_name in ["Warn 1","Warn 2","Warn 3","Warn 4","Warn 5", MUTE_ROLE_NAME]:
-                        role = discord.utils.get(guild.roles, name=role_name)
-                        if role and role in member.roles:
-                            await member.remove_roles(role)
-
-                for kanal_adi in [UYARI_KANAL, DUYURU_KANAL]:
-                    kanal = discord.utils.get(guild.text_channels, name=kanal_adi)
-                    if kanal:
-                        embed = discord.Embed(
-                            title="🔄 10 Günlük Ceza Reset",
-                            description="Tüm warn ve mute cezaları temizlendi.",
-                            color=discord.Color.green()
-                        )
-                        await kanal.send(embed=embed)
-
-            self.warn_data = {}
-            self.mute_data = {}
-
-            self.save_json(WARN_FILE, self.warn_data)
-            self.save_json(MUTE_FILE, self.mute_data)
-
-            yeni_reset = datetime.datetime.utcnow() + datetime.timedelta(days=RESET_GUN)
-            self.save_json(RESET_FILE, {"next_reset": yeni_reset.isoformat()})
+        conn.close()
 
 
 async def setup(bot):
