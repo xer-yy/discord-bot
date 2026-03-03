@@ -41,82 +41,61 @@ class Admin(commands.Cog):
     def check_admin(self, ctx):
         return ctx.author.id == OWNER_ID or is_admin(ctx.guild.id, ctx.author.id)
 
-    @commands.command()
-    async def duyuru(self, ctx, *, mesaj):
-        if not self.check_admin(ctx):
-            return await ctx.send("❌ Yetkin yok.")
-
-        kanal = discord.utils.get(ctx.guild.text_channels, name="duyurular")
-        if kanal is None:
-            return await ctx.send("❌ 'duyurular' kanalı yok.")
-
-        embed = discord.Embed(
-            title="📢 DUYURU",
-            description=f"# {mesaj}",
-            color=discord.Color.red()
-        )
-
-        embed.set_author(
-            name=ctx.author.display_name,
-            icon_url=ctx.author.display_avatar.url
-        )
-
-        await kanal.send(embed=embed)
-        await ctx.send("✅ Duyuru gönderildi.")
+    # ---------------- WARN SİSTEMİ ---------------- #
 
     @commands.command()
-    async def mute(self, ctx, member: discord.Member, süre: str, *, sebep="Belirtilmedi"):
+    async def warn(self, ctx, member: discord.Member, *, sebep="Belirtilmedi"):
         if not self.check_admin(ctx):
             return await ctx.send("❌ Yetkin yok.")
 
         if member.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
-            return await ctx.send("❌ Bu kişiyi susturamazsın (rol hiyerarşisi).")
+            return await ctx.send("❌ Bu kullanıcıya warn veremezsin.")
 
-        seconds = parse_duration(süre.replace(" ", ""))
+        add_punishment(ctx.guild.id, member.id, ctx.author.id, "WARN", sebep)
 
-        if not seconds:
-            return await ctx.send("❌ Süre formatı hatalı.\nÖrnek: 10m, 2h, 1d, 1h30m")
+        conn = sqlite3.connect("bot.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM punishments WHERE guild_id = ? AND user_id = ? AND type = 'WARN'",
+            (ctx.guild.id, member.id)
+        )
+        warn_sayisi = cursor.fetchone()[0]
+        conn.close()
 
-        muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-
-        if muted_role is None:
-            muted_role = await ctx.guild.create_role(name="Muted")
-            for channel in ctx.guild.channels:
-                await channel.set_permissions(muted_role, send_messages=False, speak=False)
-
-        await member.add_roles(muted_role)
-
-        add_punishment(ctx.guild.id, member.id, ctx.author.id, "MUTE", sebep)
-
-        await ctx.send(f"🔇 {member.mention} {süre} boyunca susturuldu.")
+        await ctx.send(f"⚠️ {member.mention} uyarıldı. (Toplam Warn: {warn_sayisi})")
 
         log = discord.utils.get(ctx.guild.text_channels, name="log")
         if log:
-            await log.send(f"🔇 {member} susturuldu | Süre: {süre} | Yetkili: {ctx.author} | Sebep: {sebep}")
+            await log.send(f"⚠️ {member} warn aldı | Yetkili: {ctx.author} | Sebep: {sebep}")
 
-        await asyncio.sleep(seconds)
+        # 3 WARN = 10 DK MUTE
+        if warn_sayisi == 3:
+            muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
 
-        if muted_role in member.roles:
-            await member.remove_roles(muted_role)
-            if log:
-                await log.send(f"🔊 {member} otomatik olarak susturma kaldırıldı.")
+            if muted_role is None:
+                muted_role = await ctx.guild.create_role(name="Muted")
+                for channel in ctx.guild.channels:
+                    await channel.set_permissions(muted_role, send_messages=False, speak=False)
 
-    @commands.command()
-    async def unmute(self, ctx, member: discord.Member):
-        if not self.check_admin(ctx):
-            return await ctx.send("❌ Yetkin yok.")
+            await member.add_roles(muted_role)
+            await ctx.send("🔇 3 warn olduğu için 10 dakika susturuldu.")
 
-        muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+            await asyncio.sleep(600)
 
-        if muted_role and muted_role in member.roles:
-            await member.remove_roles(muted_role)
-            await ctx.send(f"🔊 {member.mention} susturma kaldırıldı.")
+            if muted_role in member.roles:
+                await member.remove_roles(muted_role)
 
-            log = discord.utils.get(ctx.guild.text_channels, name="log")
-            if log:
-                await log.send(f"🔊 {member} susturma kaldırıldı | Yetkili: {ctx.author}")
-        else:
-            await ctx.send("❌ Kullanıcı muted değil.")
+        # 5 WARN = YÖNETİM UYARI (KANAL ADI: uyarı)
+        if warn_sayisi == 5:
+            yonetim_kanal = discord.utils.get(ctx.guild.text_channels, name="uyarı")
+            if yonetim_kanal:
+                await yonetim_kanal.send(
+                    f"🚨 {member.mention} 5 WARN'a ulaştı!\n"
+                    f"Toplam Warn: {warn_sayisi}\n"
+                    f"Son Yetkili: {ctx.author.mention}"
+                )
+
+    # ---------------- SİCİL ---------------- #
 
     @commands.command()
     async def sicil(self, ctx, member: discord.Member):
