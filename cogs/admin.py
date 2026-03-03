@@ -664,3 +664,5 @@ Mute Rol: {MUTE_ROLE_NAME}
     )
 
     await ctx.send(embed=embed)
+    async def setup(bot):
+    await bot.add_cog(Admin(bot))
