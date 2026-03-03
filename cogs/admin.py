@@ -18,9 +18,7 @@ class Admin(commands.Cog):
         self.load_data()
         self.reset_loop.start()
 
-    # =========================
-    # DATA
-    # =========================
+    # ================= DATA =================
     def load_data(self):
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -49,9 +47,7 @@ class Admin(commands.Cog):
                 f
             )
 
-    # =========================
-    # ROLE GÜNCELLEME
-    # =========================
+    # ================= ROLE UPDATE =================
     async def update_roles(self, member, warn_count):
         for i in range(1, 6):
             role = discord.utils.get(member.guild.roles, name=f"warn {i}")
@@ -63,9 +59,7 @@ class Admin(commands.Cog):
             if role:
                 await member.add_roles(role)
 
-    # =========================
-    # WARN KOMUTU
-    # =========================
+    # ================= WARN =================
     @commands.command()
     @commands.has_permissions(administrator=True)
     async def warn(self, ctx, member: discord.Member, *, reason="Sebep belirtilmedi"):
@@ -99,7 +93,6 @@ class Admin(commands.Cog):
 
         await ctx.send(embed=embed)
 
-        # 3 warn → 10 dk timeout
         if warn_count == 3:
             try:
                 await member.timeout(datetime.timedelta(minutes=10))
@@ -107,21 +100,18 @@ class Admin(commands.Cog):
             except:
                 pass
 
-        # 5 warn → kanal bildirimi
         if warn_count == 5:
             for channel in ctx.guild.text_channels:
                 if channel.name in [UYARI_KANAL, DUYURU_KANAL]:
-                    warn_embed = discord.Embed(
+                    alert = discord.Embed(
                         title="🚨 5 WARN UYARISI",
                         color=discord.Color.red()
                     )
-                    warn_embed.add_field(name="Kullanıcı", value=member.mention)
-                    warn_embed.add_field(name="Sebep", value=reason)
-                    await channel.send(embed=warn_embed)
+                    alert.add_field(name="Kullanıcı", value=member.mention)
+                    alert.add_field(name="Sebep", value=reason)
+                    await channel.send(embed=alert)
 
-    # =========================
-    # SİCİL GÖRÜNTÜLEME
-    # =========================
+    # ================= SICIL =================
     @commands.command()
     async def sicil(self, ctx, member: discord.Member):
 
@@ -145,9 +135,7 @@ class Admin(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    # =========================
-    # KULLANICI SİCİL TEMİZLE
-    # =========================
+    # ================= SICIL TEMIZLE =================
     @commands.command()
     @commands.has_permissions(administrator=True)
     async def siciltemizle(self, ctx, member: discord.Member):
@@ -167,9 +155,7 @@ class Admin(commands.Cog):
 
         await ctx.send(f"{member.mention} kullanıcısının sicili temizlendi.")
 
-    # =========================
-    # MANUEL SUNUCU RESET
-    # =========================
+    # ================= MANUEL RESET =================
     @commands.command()
     @commands.has_permissions(administrator=True)
     async def cezalarisifirla(self, ctx):
@@ -191,9 +177,110 @@ class Admin(commands.Cog):
 
         await ctx.send("✅ Tüm cezalar sıfırlandı.")
 
-    # =========================
-    # OTOMATİK 10 GÜN RESET
-    # =========================
+    # ================= MOD PANEL =================
+    @commands.command()
+    @commands.has_permissions(administrator=True)
+    async def modpanel(self, ctx):
+
+        total_warn = 0
+        user_count = 0
+        moderator_stats = {}
+        last_7_days = 0
+        last_24_hours = 0
+
+        now = datetime.datetime.utcnow()
+
+        for user_id, warns in self.data.items():
+            if len(warns) > 0:
+                user_count += 1
+                total_warn += len(warns)
+
+                for entry in warns:
+                    mod = entry["moderator"]
+                    date = datetime.datetime.strptime(entry["date"], "%d.%m.%Y %H:%M")
+
+                    if mod not in moderator_stats:
+                        moderator_stats[mod] = 0
+                    moderator_stats[mod] += 1
+
+                    if (now - date).days <= 7:
+                        last_7_days += 1
+
+                    if (now - date).total_seconds() <= 86400:
+                        last_24_hours += 1
+
+        sorted_mods = sorted(moderator_stats.items(), key=lambda x: x[1], reverse=True)
+
+        top1 = sorted_mods[0] if len(sorted_mods) > 0 else ("Yok", 0)
+        top2 = sorted_mods[1] if len(sorted_mods) > 1 else ("Yok", 0)
+        top3 = sorted_mods[2] if len(sorted_mods) > 2 else ("Yok", 0)
+
+        top_user = None
+        top_user_warn = 0
+
+        for user_id, warns in self.data.items():
+            if len(warns) > top_user_warn:
+                top_user_warn = len(warns)
+                top_user = user_id
+
+        top_user_display = "Yok"
+        if top_user:
+            member = ctx.guild.get_member(int(top_user))
+            if member:
+                top_user_display = f"{member.mention} ({top_user_warn} warn)"
+
+        next_reset_text = "Bilinmiyor"
+        if os.path.exists(RESET_FILE):
+            with open(RESET_FILE, "r") as f:
+                data = json.load(f)
+                next_reset = datetime.datetime.fromisoformat(data["next_reset"])
+                remaining_days = (next_reset - now).days
+                next_reset_text = f"{remaining_days} gün kaldı"
+
+        avg_daily = round(total_warn / 10, 2) if total_warn > 0 else 0
+
+        embed = discord.Embed(
+            title="🛡 Moderasyon Dashboard",
+            color=discord.Color.dark_gold(),
+            timestamp=now
+        )
+
+        embed.add_field(
+            name="📊 Genel İstatistik",
+            value=(
+                f"⚠ Toplam Aktif Warn: {total_warn}\n"
+                f"👥 Warn Alan Kullanıcı: {user_count}\n"
+                f"📅 Son 7 Gün: {last_7_days}\n"
+                f"📆 Son 24 Saat: {last_24_hours}\n"
+                f"⏳ Reset: {next_reset_text}"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🏆 Yetkili Performansı",
+            value=(
+                f"🥇 {top1[0]} → {top1[1]}\n"
+                f"🥈 {top2[0]} → {top2[1]}\n"
+                f"🥉 {top3[0]} → {top3[1]}"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🔥 Risk Analizi",
+            value=(
+                f"🚨 En Çok Warn Alan: {top_user_display}\n"
+                f"📈 Günlük Ortalama: {avg_daily}"
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="IZM Moderasyon Sistemi • PRO")
+
+        await ctx.send(embed=embed)
+
+    # ================= OTOMATIK RESET =================
     @tasks.loop(hours=1)
     async def reset_loop(self):
 
