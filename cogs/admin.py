@@ -663,5 +663,4 @@ Mute Rol: {MUTE_ROLE_NAME}
         discord.Color.green()
     )
 
-async def setup(bot):
-    await bot.add_cog(Admin(bot))
+    await ctx.send(embed=embed)
