@@ -661,6 +661,3 @@ Mute Rol: {MUTE_ROLE_NAME}
 
     await ctx.send(embed=embed)
 
-# ================= BOT ÇALIŞTIR =================
-
-bot.run("TOKEN")
