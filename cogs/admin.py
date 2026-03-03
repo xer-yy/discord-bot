@@ -10,7 +10,7 @@ RESET_DAYS = 10
 class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.init_db()  # DB garanti oluşturulur
+        self.init_db()
         self.check_mutes.start()
         self.check_global_reset.start()
 
@@ -39,20 +39,77 @@ class Admin(commands.Cog):
         )
         """)
 
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            guild_id INTEGER,
+            user_id INTEGER
+        )
+        """)
+
         conn.commit()
         conn.close()
 
     # ---------------- YETKİ ---------------- #
 
-    def is_owner(self, ctx):
-        return ctx.author.id == OWNER_ID
+    def is_owner(self, user):
+        return user.id == OWNER_ID
+
+    def is_admin(self, guild_id, user_id):
+        conn = sqlite3.connect("bot.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        SELECT * FROM admins WHERE guild_id=? AND user_id=?
+        """, (guild_id, user_id))
+
+        result = cursor.fetchone()
+        conn.close()
+
+        return result is not None
+
+    def has_permission(self, ctx):
+        return self.is_owner(ctx.author) or self.is_admin(ctx.guild.id, ctx.author.id)
+
+    # ---------------- ADMIN EKLE / SİL ---------------- #
+
+    @commands.command()
+    async def adminekle(self, ctx, member: discord.Member):
+        if not self.is_owner(ctx.author):
+            return await ctx.send("❌ Sadece bot sahibi ekleyebilir.")
+
+        conn = sqlite3.connect("bot.db")
+        cursor = conn.cursor()
+
+        cursor.execute("INSERT INTO admins VALUES (?,?)", (ctx.guild.id, member.id))
+
+        conn.commit()
+        conn.close()
+
+        await ctx.send(f"✅ {member.mention} admin yapıldı.")
+
+    @commands.command()
+    async def adminsil(self, ctx, member: discord.Member):
+        if not self.is_owner(ctx.author):
+            return await ctx.send("❌ Sadece bot sahibi silebilir.")
+
+        conn = sqlite3.connect("bot.db")
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        DELETE FROM admins WHERE guild_id=? AND user_id=?
+        """, (ctx.guild.id, member.id))
+
+        conn.commit()
+        conn.close()
+
+        await ctx.send(f"🗑 {member.mention} adminlikten çıkarıldı.")
 
     # ---------------- WARN ---------------- #
 
     @commands.command()
     async def warn(self, ctx, member: discord.Member, *, reason="Belirtilmedi"):
-        if not self.is_owner(ctx):
-            return await ctx.send("❌ Sadece bot sahibi kullanabilir.")
+        if not self.has_permission(ctx):
+            return await ctx.send("❌ Yetkin yok.")
 
         conn = sqlite3.connect("bot.db")
         cursor = conn.cursor()
@@ -183,7 +240,6 @@ class Admin(commands.Cog):
         if datetime.utcnow() >= reset_time:
 
             for guild in self.bot.guilds:
-
                 for member in guild.members:
                     for i in range(1, 6):
                         role = discord.utils.get(guild.roles, name=f"warn {i}")
@@ -196,7 +252,7 @@ class Admin(commands.Cog):
 
                 embed = discord.Embed(
                     title="♻ CEZA SİSTEMİ RESETLENDİ",
-                    description="Sunucu genelindeki tüm warn ve mute cezaları sıfırlandı.",
+                    description="Tüm warn ve mute cezaları sıfırlandı.",
                     color=discord.Color.green()
                 )
 
@@ -220,7 +276,7 @@ class Admin(commands.Cog):
 
     @commands.command()
     async def cezalarisifirla(self, ctx):
-        if not self.is_owner(ctx):
+        if not self.is_owner(ctx.author):
             return await ctx.send("❌ Sadece bot sahibi kullanabilir.")
 
         conn = sqlite3.connect("bot.db")
@@ -244,14 +300,14 @@ class Admin(commands.Cog):
             if muted_role and muted_role in member.roles:
                 await member.remove_roles(muted_role)
 
-        await ctx.send("✅ Tüm cezalar sıfırlandı ve sayaç yeniden başlatıldı.")
+        await ctx.send("✅ Tüm cezalar sıfırlandı.")
 
     # ---------------- SİCİL ---------------- #
 
     @commands.command()
     async def sicil(self, ctx, member: discord.Member):
-        if not self.is_owner(ctx):
-            return await ctx.send("❌ Sadece bot sahibi kullanabilir.")
+        if not self.has_permission(ctx):
+            return await ctx.send("❌ Yetkin yok.")
 
         conn = sqlite3.connect("bot.db")
         cursor = conn.cursor()
