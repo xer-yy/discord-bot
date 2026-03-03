@@ -1,12 +1,13 @@
-class Admin(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
 import discord
 from discord.ext import commands, tasks
 import sqlite3
 import datetime
 import asyncio
 from config import OWNER_ID
+
+class Admin(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 
 # ================= CONFIG =================
 
