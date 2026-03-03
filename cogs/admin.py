@@ -41,15 +41,12 @@ class Admin(commands.Cog):
     def check_admin(self, ctx):
         return ctx.author.id == OWNER_ID or is_admin(ctx.guild.id, ctx.author.id)
 
-    # ---------------- WARN SİSTEMİ ---------------- #
+    # ---------------- WARN ---------------- #
 
     @commands.command()
     async def warn(self, ctx, member: discord.Member, *, sebep="Belirtilmedi"):
         if not self.check_admin(ctx):
             return await ctx.send("❌ Yetkin yok.")
-
-        if member.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
-            return await ctx.send("❌ Bu kullanıcıya warn veremezsin.")
 
         add_punishment(ctx.guild.id, member.id, ctx.author.id, "WARN", sebep)
 
@@ -64,36 +61,61 @@ class Admin(commands.Cog):
 
         await ctx.send(f"⚠️ {member.mention} uyarıldı. (Toplam Warn: {warn_sayisi})")
 
-        log = discord.utils.get(ctx.guild.text_channels, name="log")
-        if log:
-            await log.send(f"⚠️ {member} warn aldı | Yetkili: {ctx.author} | Sebep: {sebep}")
+        # WARN ROLLERİ
+        for i in range(1, 6):
+            rol = discord.utils.get(ctx.guild.roles, name=f"warn {i}")
+            if rol and rol in member.roles:
+                await member.remove_roles(rol)
+
+        if warn_sayisi <= 5:
+            yeni_rol = discord.utils.get(ctx.guild.roles, name=f"warn {warn_sayisi}")
+            if yeni_rol:
+                await member.add_roles(yeni_rol)
 
         # 3 WARN = 10 DK MUTE
         if warn_sayisi == 3:
             muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+            if muted_role:
+                await member.add_roles(muted_role)
+                await ctx.send("🔇 3 warn olduğu için 10 dakika susturuldu.")
+                await asyncio.sleep(600)
+                if muted_role in member.roles:
+                    await member.remove_roles(muted_role)
 
-            if muted_role is None:
-                muted_role = await ctx.guild.create_role(name="Muted")
-                for channel in ctx.guild.channels:
-                    await channel.set_permissions(muted_role, send_messages=False, speak=False)
-
-            await member.add_roles(muted_role)
-            await ctx.send("🔇 3 warn olduğu için 10 dakika susturuldu.")
-
-            await asyncio.sleep(600)
-
-            if muted_role in member.roles:
-                await member.remove_roles(muted_role)
-
-        # 5 WARN = YÖNETİM UYARI (KANAL ADI: uyarı)
+        # 5 WARN = UYARI KANALI
         if warn_sayisi == 5:
-            yonetim_kanal = discord.utils.get(ctx.guild.text_channels, name="uyarı")
-            if yonetim_kanal:
-                await yonetim_kanal.send(
-                    f"🚨 {member.mention} 5 WARN'a ulaştı!\n"
-                    f"Toplam Warn: {warn_sayisi}\n"
-                    f"Son Yetkili: {ctx.author.mention}"
-                )
+            kanal = discord.utils.get(ctx.guild.text_channels, name="uyarı")
+            if kanal:
+                await kanal.send(f"🚨 {member.mention} 5 WARN'a ulaştı!")
+
+    # ---------------- WARN RESET ---------------- #
+
+    @commands.command()
+    async def warnreset(self, ctx, member: discord.Member):
+        if not self.check_admin(ctx):
+            return await ctx.send("❌ Yetkin yok.")
+
+        conn = sqlite3.connect("bot.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM punishments WHERE guild_id = ? AND user_id = ? AND type = 'WARN'",
+            (ctx.guild.id, member.id)
+        )
+        conn.commit()
+        conn.close()
+
+        # WARN ROLLERİNİ SİL
+        for i in range(1, 6):
+            rol = discord.utils.get(ctx.guild.roles, name=f"warn {i}")
+            if rol and rol in member.roles:
+                await member.remove_roles(rol)
+
+        # MUTE VARSA KALDIR
+        muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+        if muted_role and muted_role in member.roles:
+            await member.remove_roles(muted_role)
+
+        await ctx.send(f"♻️ {member.mention} kullanıcısının tüm warnları sıfırlandı.")
 
     # ---------------- SİCİL ---------------- #
 
@@ -106,7 +128,7 @@ class Admin(commands.Cog):
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT type, reason, timestamp, moderator_id FROM punishments WHERE guild_id = ? AND user_id = ? ORDER BY timestamp DESC",
+            "SELECT type, reason, timestamp FROM punishments WHERE guild_id = ? AND user_id = ? ORDER BY timestamp DESC",
             (ctx.guild.id, member.id)
         )
 
@@ -117,38 +139,18 @@ class Admin(commands.Cog):
             return await ctx.send("🧾 Bu kullanıcının sicili temiz.")
 
         embed = discord.Embed(
-            title=f"🧾 {member.display_name} Sicil Kaydı",
+            title=f"🧾 {member.display_name} Sicil",
             color=discord.Color.orange()
         )
 
-        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.description = f"Toplam Ceza: {len(kayıtlar)}"
 
-        toplam = len(kayıtlar)
-        embed.description = f"**Toplam Ceza:** `{toplam}`\n\nSon 10 kayıt gösteriliyor.\n"
-
-        for index, (tür, sebep, zaman, mod_id) in enumerate(kayıtlar[:10], start=1):
-
-            try:
-                zaman_obj = datetime.fromisoformat(zaman)
-                unix = int(zaman_obj.timestamp())
-                zaman_format = f"<t:{unix}:R>"
-            except:
-                zaman_format = zaman
-
-            moderator = ctx.guild.get_member(mod_id)
-            moderator_name = moderator.mention if moderator else f"ID: {mod_id}"
-
+        for tür, sebep, zaman in kayıtlar[:10]:
             embed.add_field(
-                name=f"#{index} | {tür}",
-                value=(
-                    f"**Sebep:** {sebep}\n"
-                    f"**Yetkili:** {moderator_name}\n"
-                    f"**Tarih:** {zaman_format}"
-                ),
+                name=f"{tür}",
+                value=f"Sebep: {sebep}\nTarih: {zaman}",
                 inline=False
             )
-
-        embed.set_footer(text=f"Kullanıcı ID: {member.id}")
 
         await ctx.send(embed=embed)
 
