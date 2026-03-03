@@ -3,8 +3,10 @@ from discord.ext import commands
 import asyncio
 import re
 import sqlite3
+from datetime import datetime
 from database import is_admin, add_punishment
 from config import OWNER_ID
+
 
 def parse_duration(duration_str):
     pattern = r"(\d+)([smhdw])"
@@ -125,7 +127,7 @@ class Admin(commands.Cog):
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT type, reason, timestamp FROM punishments WHERE guild_id = ? AND user_id = ? ORDER BY timestamp DESC",
+            "SELECT type, reason, timestamp, moderator_id FROM punishments WHERE guild_id = ? AND user_id = ? ORDER BY timestamp DESC",
             (ctx.guild.id, member.id)
         )
 
@@ -140,12 +142,34 @@ class Admin(commands.Cog):
             color=discord.Color.orange()
         )
 
-        for tür, sebep, zaman in kayıtlar[:10]:
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+        toplam = len(kayıtlar)
+        embed.description = f"**Toplam Ceza:** `{toplam}`\n\nSon 10 kayıt gösteriliyor.\n"
+
+        for index, (tür, sebep, zaman, mod_id) in enumerate(kayıtlar[:10], start=1):
+
+            try:
+                zaman_obj = datetime.fromisoformat(zaman)
+                unix = int(zaman_obj.timestamp())
+                zaman_format = f"<t:{unix}:R>"
+            except:
+                zaman_format = zaman
+
+            moderator = ctx.guild.get_member(mod_id)
+            moderator_name = moderator.mention if moderator else f"ID: {mod_id}"
+
             embed.add_field(
-                name=f"{tür} | {zaman}",
-                value=f"Sebep: {sebep}",
+                name=f"#{index} | {tür}",
+                value=(
+                    f"**Sebep:** {sebep}\n"
+                    f"**Yetkili:** {moderator_name}\n"
+                    f"**Tarih:** {zaman_format}"
+                ),
                 inline=False
             )
+
+        embed.set_footer(text=f"Kullanıcı ID: {member.id}")
 
         await ctx.send(embed=embed)
 
