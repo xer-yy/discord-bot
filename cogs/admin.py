@@ -3,315 +3,223 @@ from discord.ext import commands, tasks
 import datetime
 import json
 import os
+import asyncio
+
+WARN_FILE = "warn_data.json"
+ADMIN_FILE = "admin_data.json"
+MUTE_FILE = "mute_data.json"
+RESET_FILE = "reset_time.json"
 
 UYARI_KANAL = "uyarı"
 DUYURU_KANAL = "duyuru"
+YONETIM_KANAL = "yonetim-uyari"
 
-DATA_FILE = "warn_data.json"
-RESET_FILE = "reset_time.json"
+MUTE_SURE = 600  # 10 dakika
 
 
 class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.data = {}
+        self.warn_data = {}
+        self.admins = []
+        self.mute_data = {}
         self.load_data()
         self.reset_loop.start()
+        self.mute_control.start()
 
     # ================= DATA =================
+
     def load_data(self):
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                self.data = json.load(f)
-        else:
-            self.data = {}
+        for file, attr in [
+            (WARN_FILE, "warn_data"),
+            (ADMIN_FILE, "admins"),
+            (MUTE_FILE, "mute_data"),
+        ]:
+            if os.path.exists(file):
+                with open(file, "r") as f:
+                    setattr(self, attr, json.load(f))
+            else:
+                setattr(self, attr, {} if "data" in file else [])
 
         if not os.path.exists(RESET_FILE):
             with open(RESET_FILE, "w") as f:
                 json.dump(
-                    {"next_reset": self.get_next_reset().isoformat()},
+                    {"next_reset": (datetime.datetime.utcnow() + datetime.timedelta(days=10)).isoformat()},
                     f
                 )
 
-    def save_data(self):
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=4)
+    def save(self, file, data):
+        with open(file, "w") as f:
+            json.dump(data, f, indent=4)
 
-    def get_next_reset(self):
-        return datetime.datetime.utcnow() + datetime.timedelta(days=10)
+    # ================= ADMIN CONTROL =================
 
-    def update_reset_time(self):
-        with open(RESET_FILE, "w") as f:
-            json.dump(
-                {"next_reset": self.get_next_reset().isoformat()},
-                f
-            )
+    def is_admin(self, user):
+        return str(user.id) in self.admins
 
-    # ================= ROLE UPDATE =================
-    async def update_roles(self, member, warn_count):
+    async def admin_check(self, ctx):
+        if not self.admins:
+            self.admins.append(str(ctx.author.id))
+            self.save(ADMIN_FILE, self.admins)
+            await ctx.send("👑 İlk bot admini olarak atandın.")
+            return True
+
+        if not self.is_admin(ctx.author):
+            await ctx.send("⛔ Bot admini değilsin.")
+            return False
+        return True
+
+    @commands.command()
+    async def adminekle(self, ctx, member: discord.Member):
+        if not await self.admin_check(ctx): return
+        if str(member.id) not in self.admins:
+            self.admins.append(str(member.id))
+            self.save(ADMIN_FILE, self.admins)
+            await ctx.send(f"✅ {member.mention} admin yapıldı.")
+
+    @commands.command()
+    async def adminsil(self, ctx, member: discord.Member):
+        if not await self.admin_check(ctx): return
+        if str(member.id) in self.admins:
+            self.admins.remove(str(member.id))
+            self.save(ADMIN_FILE, self.admins)
+            await ctx.send(f"❌ {member.mention} adminlikten çıkarıldı.")
+
+    @commands.command()
+    async def adminliste(self, ctx):
+        if not await self.admin_check(ctx): return
+        embed = discord.Embed(title="🛡 Bot Adminleri", color=discord.Color.gold())
+        for i, admin_id in enumerate(self.admins, 1):
+            member = ctx.guild.get_member(int(admin_id))
+            embed.add_field(name=f"{i}.", value=member.mention if member else admin_id)
+        await ctx.send(embed=embed)
+
+    # ================= WARN SYSTEM =================
+
+    async def update_warn_roles(self, member, count):
         for i in range(1, 6):
-            role = discord.utils.get(member.guild.roles, name=f"warn {i}")
+            role = discord.utils.get(member.guild.roles, name=f"Warn {i}")
             if role and role in member.roles:
                 await member.remove_roles(role)
 
-        if 1 <= warn_count <= 5:
-            role = discord.utils.get(member.guild.roles, name=f"warn {warn_count}")
+        if 1 <= count <= 5:
+            role = discord.utils.get(member.guild.roles, name=f"Warn {count}")
             if role:
                 await member.add_roles(role)
 
-    # ================= WARN =================
     @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def warn(self, ctx, member: discord.Member, *, reason="Sebep belirtilmedi"):
+    async def warn(self, ctx, member: discord.Member, *, reason="Sebep yok"):
+        if not await self.admin_check(ctx): return
 
         user_id = str(member.id)
-
-        if user_id not in self.data:
-            self.data[user_id] = []
-
-        warn_entry = {
+        self.warn_data.setdefault(user_id, [])
+        self.warn_data[user_id].append({
             "reason": reason,
             "moderator": str(ctx.author),
             "date": datetime.datetime.utcnow().strftime("%d.%m.%Y %H:%M")
-        }
+        })
 
-        self.data[user_id].append(warn_entry)
-        warn_count = len(self.data[user_id])
+        count = len(self.warn_data[user_id])
+        await self.update_warn_roles(member, count)
+        self.save(WARN_FILE, self.warn_data)
 
-        await self.update_roles(member, warn_count)
-        self.save_data()
-
-        embed = discord.Embed(
-            title="⚠ Kullanıcı Uyarıldı",
-            color=discord.Color.orange(),
-            timestamp=datetime.datetime.utcnow()
-        )
-        embed.add_field(name="Kullanıcı", value=member.mention, inline=False)
-        embed.add_field(name="Toplam Warn", value=str(warn_count))
+        embed = discord.Embed(title="⚠ Warn Atıldı", color=discord.Color.orange())
+        embed.add_field(name="Kullanıcı", value=member.mention)
+        embed.add_field(name="Toplam Warn", value=str(count))
         embed.add_field(name="Sebep", value=reason, inline=False)
-        embed.set_footer(text=f"Yetkili: {ctx.author}")
-
         await ctx.send(embed=embed)
 
-        if warn_count == 3:
-            try:
-                await member.timeout(datetime.timedelta(minutes=10))
-                await ctx.send(f"{member.mention} 10 dakika timeout yedi.")
-            except:
-                pass
+        if count == 3:
+            await self.mute_member(member)
 
-        if warn_count == 5:
-            for channel in ctx.guild.text_channels:
-                if channel.name in [UYARI_KANAL, DUYURU_KANAL]:
-                    alert = discord.Embed(
-                        title="🚨 5 WARN UYARISI",
-                        color=discord.Color.red()
-                    )
-                    alert.add_field(name="Kullanıcı", value=member.mention)
-                    alert.add_field(name="Sebep", value=reason)
-                    await channel.send(embed=alert)
+        if count == 5:
+            kanal = discord.utils.get(ctx.guild.text_channels, name=YONETIM_KANAL)
+            if kanal:
+                await kanal.send(f"🚨 {member.mention} 5 WARN seviyesine ulaştı!")
+
+    async def mute_member(self, member):
+        mute_role = discord.utils.get(member.guild.roles, name="Mute")
+        if not mute_role: return
+        await member.add_roles(mute_role)
+        bitis = datetime.datetime.utcnow() + datetime.timedelta(seconds=MUTE_SURE)
+        self.mute_data[str(member.id)] = bitis.isoformat()
+        self.save(MUTE_FILE, self.mute_data)
+
+    @commands.command()
+    async def unmute(self, ctx, member: discord.Member):
+        if not await self.admin_check(ctx): return
+        mute_role = discord.utils.get(member.guild.roles, name="Mute")
+        if mute_role in member.roles:
+            await member.remove_roles(mute_role)
+        self.mute_data.pop(str(member.id), None)
+        self.save(MUTE_FILE, self.mute_data)
+        await ctx.send("🔊 Kullanıcı unmute edildi.")
 
     # ================= SICIL =================
+
     @commands.command()
     async def sicil(self, ctx, member: discord.Member):
-
+        if not await self.admin_check(ctx): return
         user_id = str(member.id)
-
-        if user_id not in self.data or len(self.data[user_id]) == 0:
-            await ctx.send("Bu kullanıcının sicili temiz.")
+        if user_id not in self.warn_data:
+            await ctx.send("Sicil temiz.")
             return
 
-        embed = discord.Embed(
-            title="📜 Sicil Geçmişi",
-            color=discord.Color.blue()
-        )
-
-        for i, entry in enumerate(self.data[user_id], start=1):
-            embed.add_field(
-                name=f"Warn {i}",
-                value=f"Sebep: {entry['reason']}\nYetkili: {entry['moderator']}\nTarih: {entry['date']}",
-                inline=False
-            )
-
+        embed = discord.Embed(title="📜 Sicil", color=discord.Color.blue())
+        for i, entry in enumerate(self.warn_data[user_id], 1):
+            embed.add_field(name=f"{i}. Warn",
+                            value=f"{entry['reason']} | {entry['moderator']} | {entry['date']}",
+                            inline=False)
         await ctx.send(embed=embed)
 
-    # ================= SICIL TEMIZLE =================
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def siciltemizle(self, ctx, member: discord.Member):
+    # ================= AUTO UNMUTE CONTROL =================
 
-        user_id = str(member.id)
-
-        if user_id in self.data:
-            del self.data[user_id]
-            self.save_data()
-
-        await self.update_roles(member, 0)
-
-        try:
-            await member.timeout(None)
-        except:
-            pass
-
-        await ctx.send(f"{member.mention} kullanıcısının sicili temizlendi.")
-
-    # ================= MANUEL RESET =================
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def cezalarisifirla(self, ctx):
-
-        self.data = {}
-        self.save_data()
-        self.update_reset_time()
-
-        for member in ctx.guild.members:
-            await self.update_roles(member, 0)
-            try:
-                await member.timeout(None)
-            except:
-                pass
-
-        for channel in ctx.guild.text_channels:
-            if channel.name in [UYARI_KANAL, DUYURU_KANAL]:
-                await channel.send("📢 Sunucu geneli tüm cezalar sıfırlandı.")
-
-        await ctx.send("✅ Tüm cezalar sıfırlandı.")
-
-    # ================= MOD PANEL =================
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def modpanel(self, ctx):
-
-        total_warn = 0
-        user_count = 0
-        moderator_stats = {}
-        last_7_days = 0
-        last_24_hours = 0
-
+    @tasks.loop(seconds=30)
+    async def mute_control(self):
         now = datetime.datetime.utcnow()
+        for user_id, bitis in list(self.mute_data.items()):
+            if now >= datetime.datetime.fromisoformat(bitis):
+                for guild in self.bot.guilds:
+                    member = guild.get_member(int(user_id))
+                    if member:
+                        mute_role = discord.utils.get(guild.roles, name="Mute")
+                        if mute_role and mute_role in member.roles:
+                            await member.remove_roles(mute_role)
+                self.mute_data.pop(user_id)
+        self.save(MUTE_FILE, self.mute_data)
 
-        for user_id, warns in self.data.items():
-            if len(warns) > 0:
-                user_count += 1
-                total_warn += len(warns)
+    # ================= GLOBAL RESET =================
 
-                for entry in warns:
-                    mod = entry["moderator"]
-                    date = datetime.datetime.strptime(entry["date"], "%d.%m.%Y %H:%M")
-
-                    if mod not in moderator_stats:
-                        moderator_stats[mod] = 0
-                    moderator_stats[mod] += 1
-
-                    if (now - date).days <= 7:
-                        last_7_days += 1
-
-                    if (now - date).total_seconds() <= 86400:
-                        last_24_hours += 1
-
-        sorted_mods = sorted(moderator_stats.items(), key=lambda x: x[1], reverse=True)
-
-        top1 = sorted_mods[0] if len(sorted_mods) > 0 else ("Yok", 0)
-        top2 = sorted_mods[1] if len(sorted_mods) > 1 else ("Yok", 0)
-        top3 = sorted_mods[2] if len(sorted_mods) > 2 else ("Yok", 0)
-
-        top_user = None
-        top_user_warn = 0
-
-        for user_id, warns in self.data.items():
-            if len(warns) > top_user_warn:
-                top_user_warn = len(warns)
-                top_user = user_id
-
-        top_user_display = "Yok"
-        if top_user:
-            member = ctx.guild.get_member(int(top_user))
-            if member:
-                top_user_display = f"{member.mention} ({top_user_warn} warn)"
-
-        next_reset_text = "Bilinmiyor"
-        if os.path.exists(RESET_FILE):
-            with open(RESET_FILE, "r") as f:
-                data = json.load(f)
-                next_reset = datetime.datetime.fromisoformat(data["next_reset"])
-                remaining_days = (next_reset - now).days
-                next_reset_text = f"{remaining_days} gün kaldı"
-
-        avg_daily = round(total_warn / 10, 2) if total_warn > 0 else 0
-
-        embed = discord.Embed(
-            title="🛡 Moderasyon Dashboard",
-            color=discord.Color.dark_gold(),
-            timestamp=now
-        )
-
-        embed.add_field(
-            name="📊 Genel İstatistik",
-            value=(
-                f"⚠ Toplam Aktif Warn: {total_warn}\n"
-                f"👥 Warn Alan Kullanıcı: {user_count}\n"
-                f"📅 Son 7 Gün: {last_7_days}\n"
-                f"📆 Son 24 Saat: {last_24_hours}\n"
-                f"⏳ Reset: {next_reset_text}"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name="🏆 Yetkili Performansı",
-            value=(
-                f"🥇 {top1[0]} → {top1[1]}\n"
-                f"🥈 {top2[0]} → {top2[1]}\n"
-                f"🥉 {top3[0]} → {top3[1]}"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name="🔥 Risk Analizi",
-            value=(
-                f"🚨 En Çok Warn Alan: {top_user_display}\n"
-                f"📈 Günlük Ortalama: {avg_daily}"
-            ),
-            inline=False
-        )
-
-        embed.set_footer(text="IZM Moderasyon Sistemi • PRO")
-
-        await ctx.send(embed=embed)
-
-    # ================= OTOMATIK RESET =================
     @tasks.loop(hours=1)
     async def reset_loop(self):
-
-        if not os.path.exists(RESET_FILE):
-            return
-
         with open(RESET_FILE, "r") as f:
             data = json.load(f)
 
         next_reset = datetime.datetime.fromisoformat(data["next_reset"])
-
         if datetime.datetime.utcnow() >= next_reset:
 
             for guild in self.bot.guilds:
                 for member in guild.members:
-                    await self.update_roles(member, 0)
-                    try:
-                        await member.timeout(None)
-                    except:
-                        pass
+                    for role_name in ["Warn 1","Warn 2","Warn 3","Warn 4","Warn 5","Mute"]:
+                        role = discord.utils.get(guild.roles, name=role_name)
+                        if role and role in member.roles:
+                            await member.remove_roles(role)
 
-                for channel in guild.text_channels:
-                    if channel.name in [UYARI_KANAL, DUYURU_KANAL]:
-                        await channel.send(
-                            "📢 10 günlük otomatik reset gerçekleşti. Tüm cezalar silindi."
-                        )
+                for kanal_adi in [UYARI_KANAL, DUYURU_KANAL]:
+                    kanal = discord.utils.get(guild.text_channels, name=kanal_adi)
+                    if kanal:
+                        await kanal.send("🔄 10 Günlük Ceza Reset Sistemi Çalıştı. Tüm cezalar temizlendi.")
 
-            self.data = {}
-            self.save_data()
-            self.update_reset_time()
+            self.warn_data = {}
+            self.mute_data = {}
+            self.save(WARN_FILE, self.warn_data)
+            self.save(MUTE_FILE, self.mute_data)
 
+            with open(RESET_FILE, "w") as f:
+                json.dump(
+                    {"next_reset": (datetime.datetime.utcnow() + datetime.timedelta(days=10)).isoformat()},
+                    f
+                )
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
