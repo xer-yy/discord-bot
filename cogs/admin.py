@@ -663,4 +663,4 @@ Mute Rol: {MUTE_ROLE_NAME}
 
 # ================= BOT ÇALIŞTIR =================
 
-bot.run("MTQ3ODEzODU0NDU5Mjc4MTUxNA.GQtTzh.ilxMXH-s7KWVLnpAW7YsqOOVGyUyibEPt3EQow")
+bot.run("TOKEN")
