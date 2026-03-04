@@ -22,6 +22,7 @@ class Database:
         self.setup()
 
     def setup(self):
+        # Warns tablosu eksikti, eklendi
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS warns (
             guild_id INTEGER,
@@ -36,20 +37,22 @@ class Database:
         CREATE TABLE IF NOT EXISTS mutes (
             guild_id INTEGER,
             user_id INTEGER,
-            end_time TEXT
+            end_time TEXT,
+            PRIMARY KEY (guild_id, user_id)
         )
         """)
 
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS admins (
             guild_id INTEGER,
-            user_id INTEGER
+            user_id INTEGER,
+            PRIMARY KEY (guild_id, user_id)
         )
         """)
 
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS reset_timer (
-            guild_id INTEGER,
+            guild_id INTEGER PRIMARY KEY,
             next_reset TEXT
         )
         """)
@@ -123,6 +126,10 @@ class Admin(commands.Cog):
         self.bot = bot
         self.mute_loop.start()
         self.global_reset_loop.start()
+
+    def cog_unload(self):
+        self.mute_loop.cancel()
+        self.global_reset_loop.cancel()
 
     # ================= HELPER FUNCTIONS =================
 
@@ -201,6 +208,7 @@ class Admin(commands.Cog):
             if not guild: continue
             member = guild.get_member(user_id)
             if not member: continue
+            
             end_time_obj = datetime.datetime.fromisoformat(end_time)
             if now >= end_time_obj:
                 role = discord.utils.get(guild.roles, name=MUTE_ROLE_NAME)
@@ -373,7 +381,7 @@ class Admin(commands.Cog):
             if member:
                 end = datetime.datetime.fromisoformat(end_time)
                 kalan = int((end - now).total_seconds() / 60)
-                desc += f"• {member.mention} → {kalan} dk kaldı\n"
+                desc += f"• {member.mention} → {kalan if kalan > 0 else 0} dk kaldı\n"
         embed = UltraEmbed.base("🔇 AKTİF MUTE LİSTESİ", desc, discord.Color.red())
         await ctx.send(embed=embed)
 
